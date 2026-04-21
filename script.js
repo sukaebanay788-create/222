@@ -1,6 +1,4 @@
-// script.js
-// Footprint Chart Demo для BTCUSDT (Binance Futures) без React
-
+// Footprint Chart Demo для BTCUSDT (Binance Futures) – полностью автономный
 const BINANCE_WS = 'wss://fstream.binance.com/ws';
 const BINANCE_API = 'https://fapi.binance.com';
 
@@ -8,10 +6,10 @@ let chart;
 let footprintSeries;
 let ws;
 let currentCandle = null;
-let candles = [];
-const timeFrame = 60000; // 1 минута в мс
-let lastCandleCloseTime = 0;
 let historicalCandles = [];
+const TIMEFRAME_MS = 60000; // 1 минута
+let lastCandleOpenTime = 0;
+let statusEl = document.getElementById('status');
 
 // --- Инициализация ---
 function init() {
@@ -26,36 +24,38 @@ function init() {
         timeScale: { borderColor: '#1e2329', timeVisible: true, secondsVisible: false },
     });
 
-    // Создаем экземпляр нашей кастомной серии
-    footprintSeries = chart.addCustomSeries(new FootprintSeries(), {});
+    // Регистрируем кастомную серию
+    const customSeries = chart.addCustomSeries(new FootprintSeries(), {
+        priceScaleId: 'right',
+    });
+    footprintSeries = customSeries;
 
     window.addEventListener('resize', () => {
         chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
     });
 
-    loadHistoricalData();
-    connectWebSocket();
+    loadHistoricalData().then(() => {
+        connectWebSocket();
+    });
 }
 
-// --- 1. Загрузка исторических данных для начального отображения ---
+// --- 1. Загрузка исторических свечей (для начального отображения) ---
 async function loadHistoricalData() {
     try {
         const res = await fetch(`${BINANCE_API}/fapi/v1/klines?symbol=BTCUSDT&interval=1m&limit=30`);
         const klines = await res.json();
-        // Преобразуем исторические свечи в формат, ожидаемый нашей серией
         historicalCandles = klines.map(k => ({
-            time: Math.floor(k[0] / 1000), // время в секундах
+            time: Math.floor(k[0] / 1000),
             open: parseFloat(k[1]),
             high: parseFloat(k[2]),
             low: parseFloat(k[3]),
             close: parseFloat(k[4]),
-            bidVol: 0, // начальные значения, будут заполнены позже, если понадобится
+            bidVol: 0,
             askVol: 0,
             levels: []
         }));
-        // Находим время последней свечи для корректного старта WebSocket
         if (historicalCandles.length > 0) {
-            lastCandleCloseTime = historicalCandles[historicalCandles.length-1].time * 1000;
+            lastCandleOpenTime = historicalCandles[historicalCandles.length - 1].time * 1000;
         }
         footprintSeries.setData(historicalCandles);
         chart.timeScale().fitContent();
@@ -64,18 +64,14 @@ async function loadHistoricalData() {
     }
 }
 
-// --- 2. Подключение к WebSocket и обработка aggTrade ---
+// --- 2. WebSocket и обработка aggTrade ---
 function connectWebSocket() {
     ws = new WebSocket(`${BINANCE_WS}/btcusdt@aggTrade`);
-    const statusEl = document.getElementById('status');
-
-    ws.onopen = () => { statusEl.textContent = 'Статус: Подключено'; };
-    ws.onclose = () => { statusEl.textContent = 'Статус: Отключено. Переподключение...'; setTimeout(connectWebSocket, 3000); };
+    ws.onopen = () => { statusEl.textContent = '🟢 Онлайн'; };
+    ws.onclose = () => { statusEl.textContent = '🔴 Офлайн. Переподключение...'; setTimeout(connectWebSocket, 3000); };
     ws.onerror = (e) => { console.error('WS error:', e); };
-
     ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
-        // Binance aggTrade stream structure
         if (msg.e === 'aggTrade') {
             processTrade(msg);
         }
@@ -85,37 +81,32 @@ function connectWebSocket() {
 function processTrade(trade) {
     const price = parseFloat(trade.p);
     const quantity = parseFloat(trade.q);
-    const isBuyerMaker = trade.m; // true = sell (taker is seller), false = buy (taker is buyer)
+    const isBuyerMaker = trade.m; // true = ask (продажа), false = bid (покупка)
+    const tradeTime = trade.T;
+    const candleOpenTime = Math.floor(tradeTime / TIMEFRAME_MS) * TIMEFRAME_MS;
 
-    const tradeTime = trade.T; // время сделки в мс
-    const candleOpenTime = Math.floor(tradeTime / timeFrame) * timeFrame;
-
-    // Если время сделки соответствует текущей накопленной свече
     if (currentCandle && currentCandle.openTime === candleOpenTime) {
         updateCandleWithTrade(currentCandle, price, quantity, isBuyerMaker);
     } else {
-        // Если это новая свеча, закрываем предыдущую (если есть) и создаем новую
         if (currentCandle) {
             finalizeCandle(currentCandle);
         }
         currentCandle = createNewCandle(candleOpenTime, price, quantity, isBuyerMaker);
     }
-
-    // Обновляем график в реальном времени
     updateChart();
 }
 
 function createNewCandle(openTime, price, quantity, isBuyerMaker) {
     const candle = {
         openTime: openTime,
-        time: Math.floor(openTime / 1000), // время в секундах для lightweight-charts
+        time: Math.floor(openTime / 1000),
         open: price,
         high: price,
         low: price,
         close: price,
         bidVol: 0,
         askVol: 0,
-        levels: new Map() // price -> { bidVol, askVol }
+        levels: new Map()
     };
     updateCandleWithTrade(candle, price, quantity, isBuyerMaker);
     return candle;
@@ -126,7 +117,7 @@ function updateCandleWithTrade(candle, price, quantity, isMaker) {
     candle.low = Math.min(candle.low, price);
     candle.close = price;
 
-    const levelPrice = Math.round(price * 100) / 100; // округление до центов
+    const levelPrice = Math.round(price * 100) / 100;
     if (!candle.levels.has(levelPrice)) {
         candle.levels.set(levelPrice, { bidVol: 0, askVol: 0 });
     }
@@ -141,15 +132,12 @@ function updateCandleWithTrade(candle, price, quantity, isMaker) {
 }
 
 function finalizeCandle(candle) {
-    // Преобразуем Map уровней в массив для сериализации
     const levelsArray = Array.from(candle.levels.entries()).map(([price, vol]) => ({
         price, bidVol: vol.bidVol, askVol: vol.askVol
     }));
-    // Сортируем уровни по цене (по убыванию)
     levelsArray.sort((a, b) => b.price - a.price);
 
-    // Создаем финальный объект свечи для серии
-    const finalizedCandle = {
+    const finalized = {
         time: candle.time,
         open: candle.open,
         high: candle.high,
@@ -160,52 +148,40 @@ function finalizeCandle(candle) {
         levels: levelsArray
     };
 
-    // Находим индекс в массиве исторических свечей
-    const existingIndex = historicalCandles.findIndex(c => c.time === finalizedCandle.time);
-    if (existingIndex !== -1) {
-        historicalCandles[existingIndex] = finalizedCandle;
+    const idx = historicalCandles.findIndex(c => c.time === finalized.time);
+    if (idx !== -1) {
+        historicalCandles[idx] = finalized;
     } else {
-        historicalCandles.push(finalizedCandle);
-        // Ограничим размер для производительности
-        if (historicalCandles.length > 100) historicalCandles.shift();
+        historicalCandles.push(finalized);
+        if (historicalCandles.length > 200) historicalCandles.shift();
     }
 }
 
 function updateChart() {
-    if (!historicalCandles.length) return;
-    // Обновляем данные серии
+    if (historicalCandles.length === 0) return;
     footprintSeries.setData(historicalCandles);
 }
 
-// --- 3. Определение кастомной серии (Custom Series) ---
+// --- 3. Кастомная серия (FootprintSeries) ---
 class FootprintSeries {
     constructor() {
         this._data = [];
     }
-
-    // Обязательный метод: возвращаем рендерер
     renderer() {
         return new FootprintRenderer();
     }
-
-    // Обязательный метод: обновление данных
     update(data) {
         this._data = data;
     }
-
-    // Дополнительно можно реализовать priceScale и т.д.
 }
 
-// Класс рендерера
 class FootprintRenderer {
     draw(target, priceConverter, isHovered, hitTestData) {
         const ctx = target.context;
         const data = this._data;
         if (!data || data.length === 0) return;
 
-        // Используем mediaSize (логические пиксели) для рисования
         ctx.clearRect(0, 0, target.mediaSize.width, target.mediaSize.height);
-
         const barSpacing = this._barSpacing;
         const visibleRange = this._visibleRange;
 
@@ -214,14 +190,14 @@ class FootprintRenderer {
             if (!candle) continue;
 
             const x = i * barSpacing + barSpacing / 2;
-            const width = barSpacing * 0.8; // ширина свечи
+            const width = barSpacing * 0.8;
 
             const openY = priceConverter(candle.open);
             const closeY = priceConverter(candle.close);
             const highY = priceConverter(candle.high);
             const lowY = priceConverter(candle.low);
 
-            // Рисуем тень свечи
+            // Тень
             ctx.beginPath();
             ctx.strokeStyle = candle.close >= candle.open ? '#0ecb81' : '#f6465d';
             ctx.lineWidth = 1;
@@ -229,38 +205,38 @@ class FootprintRenderer {
             ctx.lineTo(x, lowY);
             ctx.stroke();
 
-            // Рисуем тело свечи
+            // Тело свечи
             ctx.fillStyle = candle.close >= candle.open ? '#0ecb81' : '#f6465d';
             ctx.fillRect(x - width/2, Math.min(openY, closeY), width, Math.abs(openY - closeY));
 
-            // --- Рисуем футпринт (ячейки с объемами) внутри свечи ---
+            // Футпринт-ячейки
             if (candle.levels && candle.levels.length) {
-                const maxVol = Math.max(...candle.levels.map(l => Math.max(l.bidVol, l.askVol)));
-                const cellHeight = 12; // фиксированная высота ячейки
+                const maxVol = Math.max(...candle.levels.map(l => Math.max(l.bidVol, l.askVol)), 0.001);
+                const cellHeight = 12;
 
                 for (const level of candle.levels) {
                     const priceY = priceConverter(level.price);
                     if (priceY === null) continue;
 
-                    // Рисуем фон уровня
+                    // Фон
                     ctx.fillStyle = '#1e2329';
                     ctx.fillRect(x - width/2, priceY - cellHeight/2, width, cellHeight);
 
-                    // Рисуем объем Bid (покупки) - левая половина
+                    // Bid (левая половина)
                     if (level.bidVol > 0) {
                         const bidWidth = (level.bidVol / maxVol) * (width / 2);
                         ctx.fillStyle = '#0ecb81';
                         ctx.fillRect(x - width/2, priceY - cellHeight/2, bidWidth, cellHeight);
                     }
 
-                    // Рисуем объем Ask (продажи) - правая половина
+                    // Ask (правая половина)
                     if (level.askVol > 0) {
                         const askWidth = (level.askVol / maxVol) * (width / 2);
                         ctx.fillStyle = '#f6465d';
                         ctx.fillRect(x, priceY - cellHeight/2, askWidth, cellHeight);
                     }
 
-                    // Рисуем разделительную линию
+                    // Разделитель
                     ctx.beginPath();
                     ctx.strokeStyle = '#2b3139';
                     ctx.lineWidth = 0.5;
@@ -268,7 +244,7 @@ class FootprintRenderer {
                     ctx.lineTo(x, priceY + cellHeight/2);
                     ctx.stroke();
 
-                    // Подпись объема
+                    // Текст объёмов
                     ctx.fillStyle = '#d1d4dc';
                     ctx.font = '9px sans-serif';
                     ctx.textAlign = 'center';
@@ -279,9 +255,8 @@ class FootprintRenderer {
         }
     }
 
-    // Метод для получения данных о хит-тесте (не обязательно для MVP)
     hitTest(x, y, data) { return null; }
 }
 
-// Запуск
+// Старт
 init();
