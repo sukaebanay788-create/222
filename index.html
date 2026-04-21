@@ -3,23 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Footprint Chart Test | BTCUSDT Futures</title>
-    <link rel="stylesheet" href="style.css">
-    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <title>Footprint Chart (BTCUSDT) - Старая версия LWcharts</title>
+    <style>
+        body { margin:0; background:#0b0e11; color:#d1d4dc; font-family: sans-serif; }
+        #chart { width:100vw; height:100vh; }
+        .status { position:fixed; top:10px; right:20px; background:#1e2329; padding:5px 15px; border-radius:20px; font-size:14px; z-index:100; }
+    </style>
+    <!-- Подключаем именно версию 3.8.0 -->
+    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>📊 Footprint Chart (BTCUSDT · 1m)</h1>
-            <div id="status">Подключение...</div>
-        </div>
-        <div id="chart-container"></div>
-        <div class="legend">
-            <span><span class="bid-sample"></span> Bid (покупки)</span>
-            <span><span class="ask-sample"></span> Ask (продажи)</span>
-            <span>Цифры — объём на уровне</span>
-        </div>
-    </div>
+    <div id="chart"></div>
+    <div class="status" id="status">🔴 Подключение...</div>
     <script src="script.js"></script>
 </body>
 </html>
